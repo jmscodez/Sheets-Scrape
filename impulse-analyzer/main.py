@@ -32,7 +32,8 @@ def init_sheet():
     ]
     creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT, scope)
     client = gspread.authorize(creds)
-    return client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
+    sheet = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
+    return sheet
 
 def get_existing_urls(sheet):
     """Read the URL column (7th) to dedupe."""
@@ -44,15 +45,21 @@ def get_existing_urls(sheet):
 
 def parse_videos():
     """Fetch the latest videos for TIKTOK_USER via TikTokApi."""
-    api = TikTokApi()
-    user = api.user(username=TIKTOK_USER)
+    api = TikTokApi.get_instance()
+    try:
+        user = api.user(username=TIKTOK_USER)
+        videos_list = list(user.videos(count=50))
+    except Exception as e:
+        logging.error(f"TikTokApi error: {e}")
+        return []
+
+    logging.info(f"Fetched {len(videos_list)} videos from TikTokApi")
     videos = []
-    # Fetch up to 50 most recent
-    for video in user.videos(count=50):
+    for video in videos_list:
         stats   = video.stats
-        caption = video.desc
         vid_id  = video.id
-        created = video.create_time
+        caption = video.desc or ""
+        created = video.create_time or 0
         videos.append({
             "caption": caption,
             "views":    stats.playCount,
@@ -66,7 +73,6 @@ def parse_videos():
 
 def analyze_caption(text):
     """Count emojis, words, ALL-CAPS, and sports keywords."""
-    # crude emoji count (range of common emoji codepoints)
     emojis   = len([c for c in text if '\U0001F300' <= c <= '\U0001FAFF'])
     words    = len(text.split())
     all_caps = len([w for w in text.split() if w.isupper() and len(w) > 1])
@@ -80,16 +86,21 @@ def main():
     existing = get_existing_urls(sheet)
 
     videos   = parse_videos()
-    new_count = 0
+    if not videos:
+        logging.error("No videos fetched—exiting.")
+        return
 
+    new_count = 0
     for vid in videos:
         if vid["url"] in existing:
             continue
 
-        score = vid["views"] \
-              + 2 * vid["likes"] \
-              + 3 * vid["comments"] \
-              + 5 * vid["shares"]
+        score = (
+            vid["views"]
+            + 2 * vid["likes"]
+            + 3 * vid["comments"]
+            + 5 * vid["shares"]
+        )
         emojis, words, all_caps, sports_kw = analyze_caption(vid["caption"])
 
         row = [

@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
 
 def load_credentials():
-    """If running in Actions, write the raw JSON secret to credentials.json."""
+    """Write the raw JSON secret into credentials.json."""
     secret = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
     if secret:
         logging.info("Writing Google credentials from secret…")
@@ -32,8 +32,7 @@ def init_sheet():
     ]
     creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT, scope)
     client = gspread.authorize(creds)
-    sheet = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
-    return sheet
+    return client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
 
 def get_existing_urls(sheet):
     """Read the URL column (7th) to dedupe."""
@@ -44,55 +43,53 @@ def get_existing_urls(sheet):
         return set()
 
 def parse_videos():
-    """Use TikTokApi to fetch the latest videos for TIKTOK_USER."""
+    """Fetch the latest videos for TIKTOK_USER via TikTokApi."""
     api = TikTokApi()
-    items = api.by_username(TIKTOK_USER, count=50)
+    user = api.user(username=TIKTOK_USER)
     videos = []
-    for item in items:
-        stats   = item.get("stats", {})
-        vid_id  = item.get("id")
-        caption = item.get("desc", "")
+    # Fetch up to 50 most recent
+    for video in user.videos(count=50):
+        stats   = video.stats
+        caption = video.desc
+        vid_id  = video.id
+        created = video.create_time
         videos.append({
             "caption": caption,
-            "views":    stats.get("playCount", 0),
-            "likes":    stats.get("diggCount", 0),
-            "comments": stats.get("commentCount", 0),
-            "shares":   stats.get("shareCount", 0),
+            "views":    stats.playCount,
+            "likes":    stats.diggCount,
+            "comments": stats.commentCount,
+            "shares":   stats.shareCount,
             "url":      f"https://www.tiktok.com/@{TIKTOK_USER}/video/{vid_id}",
-            "date":     time.strftime(
-                            "%Y-%m-%d %H:%M:%S",
-                            time.localtime(item.get("createTime", 0))
-                        )
+            "date":     time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created))
         })
     return videos
 
 def analyze_caption(text):
     """Count emojis, words, ALL-CAPS, and sports keywords."""
-    emojis     = len([c for c in text if c in "😀😂❤️👍🏀🏈🏆"])  # simple emoji set
-    words      = len(text.split())
-    all_caps   = len([w for w in text.split() if w.isupper() and len(w) > 1])
-    keywords   = ["Curry","Mahomes","LeBron","buzzer","touchdown","finals","playoffs"]
-    sports_kw  = sum(text.lower().count(k.lower()) for k in keywords)
+    # crude emoji count (range of common emoji codepoints)
+    emojis   = len([c for c in text if '\U0001F300' <= c <= '\U0001FAFF'])
+    words    = len(text.split())
+    all_caps = len([w for w in text.split() if w.isupper() and len(w) > 1])
+    keywords = ["Curry","Mahomes","LeBron","buzzer","touchdown","finals","playoffs"]
+    sports_kw = sum(text.lower().count(k.lower()) for k in keywords)
     return emojis, words, all_caps, sports_kw
 
 def main():
     load_credentials()
-    sheet = init_sheet()
+    sheet    = init_sheet()
     existing = get_existing_urls(sheet)
 
-    videos = parse_videos()
+    videos   = parse_videos()
     new_count = 0
 
     for vid in videos:
         if vid["url"] in existing:
             continue
 
-        score = (
-            vid["views"]
-            + 2 * vid["likes"]
-            + 3 * vid["comments"]
-            + 5 * vid["shares"]
-        )
+        score = vid["views"] \
+              + 2 * vid["likes"] \
+              + 3 * vid["comments"] \
+              + 5 * vid["shares"]
         emojis, words, all_caps, sports_kw = analyze_caption(vid["caption"])
 
         row = [

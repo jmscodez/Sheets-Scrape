@@ -3,7 +3,7 @@ name: Weekly TikTok Scraper
 on:
   schedule:
     - cron: '0 10 * * 0'    # Every Sunday at 10:00 UTC
-  workflow_dispatch:        # Allows manual runs
+  workflow_dispatch:      # Manual trigger
 
 jobs:
   scrape:
@@ -27,7 +27,8 @@ jobs:
         env:
           GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
         run: |
-          echo "$GOOGLE_SHEETS_CREDENTIALS" | base64 --decode > credentials.json
+          # write the raw JSON secret to credentials.json
+          printf '%s' "$GOOGLE_SHEETS_CREDENTIALS" > credentials.json
 
       - name: Run scraper
         run: python main.py

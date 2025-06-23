@@ -1,7 +1,6 @@
 import os
 import time
 import logging
-import base64
 import requests
 import re
 import json
@@ -12,7 +11,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 TIKTOK_USER     = "impulseprod"
-SHEET_ID = "10UqBGA93ns5b-56gldRCwcSbGHtjqWCj45dhJS8lLAA"
+SHEET_ID        = "10UqBGA93ns5b-56gldRCwcSbGHtjqWCj45dhJS8lLAA"
 SHEET_NAME      = "Impulse Video Tracker"
 SERVICE_ACCOUNT = "credentials.json"
 # ────────────────────────────────────────────────────────────────────────────────
@@ -21,12 +20,12 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
 
 def load_credentials():
-    """If running in Actions, write the secret to credentials.json."""
+    """If running in Actions, write the raw JSON secret to credentials.json."""
     secret = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
     if secret:
-        logging.info("Decoding Google credentials from secret...")
-        with open(SERVICE_ACCOUNT, "wb") as f:
-            f.write(base64.b64decode(secret))
+        logging.info("Writing Google credentials from secret…")
+        with open(SERVICE_ACCOUNT, "w") as f:
+            f.write(secret)
 
 def init_sheet():
     """Authorize and open the target worksheet."""

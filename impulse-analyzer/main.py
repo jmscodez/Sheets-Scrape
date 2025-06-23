@@ -1,178 +1,150 @@
-import json
-import logging
-import re
+import os
 import time
-from dataclasses import dataclass, field
-from typing import List
-
+import logging
+import base64
 import requests
-from bs4 import BeautifulSoup
+import re
+import json
 from fake_useragent import UserAgent
-
+from bs4 import BeautifulSoup
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-SHEET_ID = "10UqBGA93ns5b"
-SHEET_NAME = "Impulse Video Tracker"
-TIKTOK_URL = "https://www.tiktok.com/@impulseprod"
-RETRY_COUNT = 3
-RETRY_DELAY = 5  # seconds
+# ─── CONFIG ────────────────────────────────────────────────────────────────────
+TIKTOK_USER     = "impulseprod"
+SHEET_ID        = "10UqBGA93ns5b"
+SHEET_NAME      = "Impulse Video Tracker"
+SERVICE_ACCOUNT = "credentials.json"
+# ────────────────────────────────────────────────────────────────────────────────
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(message)s")
 
-SPORTS_KEYWORDS = [
-    "Curry",
-    "LeBron",
-    "Mahomes",
-    "buzzer",
-    "touchdown",
-    "finals",
-    "playoffs",
-]
+def load_credentials():
+    """If running in Actions, write the secret to credentials.json."""
+    secret = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
+    if secret:
+        logging.info("Decoding Google credentials from secret...")
+        with open(SERVICE_ACCOUNT, "wb") as f:
+            f.write(base64.b64decode(secret))
 
+def init_sheet():
+    """Authorize and open the target worksheet."""
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT, scope)
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
+    return sheet
 
-@dataclass
-class Video:
-    caption: str
-    views: int
-    likes: int
-    comments: int
-    shares: int
-    date: str
-    url: str
-    score: int = field(init=False)
-    emojis: int = field(init=False)
-    words: int = field(init=False)
-    sports_keywords: int = field(init=False)
+def get_existing_urls(sheet):
+    """Read the URL column (7th) to dedupe."""
+    try:
+        col = sheet.col_values(7)
+        return set(col[1:])  # skip header
+    except Exception:
+        return set()
 
-    def __post_init__(self):
-        self.score = self.views + 2 * self.likes + 3 * self.comments + 5 * self.shares
-        self.emojis = len(re.findall(r"[\U0001F600-\U0001F64F]", self.caption))
-        self.words = len(self.caption.split())
-        self.sports_keywords = sum(
-            self.caption.count(word) for word in SPORTS_KEYWORDS
-        )
-
-
-def get_html(url: str) -> str:
+def fetch_page(url, retries=3, delay=5):
+    """GET with rotating UA and retry logic."""
     ua = UserAgent()
     headers = {
         "User-Agent": ua.random,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml"
     }
-    for attempt in range(1, RETRY_COUNT + 1):
+    for i in range(retries):
         try:
-            resp = requests.get(url, headers=headers, timeout=10)
-            if resp.status_code == 200:
-                return resp.text
-            logging.error("HTTP %s on attempt %s", resp.status_code, attempt)
-        except Exception as exc:
-            logging.error("Request failed on attempt %s: %s", attempt, exc)
-        time.sleep(RETRY_DELAY)
-    raise RuntimeError("Failed to fetch page after retries")
+            r = requests.get(url, headers=headers, timeout=10)
+            r.raise_for_status()
+            return r.text
+        except Exception as e:
+            logging.warning(f"Fetch failed (attempt {i+1}/{retries}): {e}")
+            time.sleep(delay * (i+1))
+    logging.error("All fetch attempts failed.")
+    return None
 
-
-def parse_videos(html: str) -> List[Video]:
-    soup = BeautifulSoup(html, "html.parser")
-    state_script = soup.find("script", id="SIGI_STATE")
-    if not state_script:
-        logging.error("Failed to find SIGI_STATE script. Layout may have changed.")
+def parse_videos(html):
+    """Extract video info from SIGI_STATE JSON."""
+    m = re.search(r'window\["SIGI_STATE"\]\s*=\s*({.*?});', html, re.DOTALL)
+    if not m:
+        logging.error("Failed to locate SIGI_STATE JSON in page.")
         return []
-    try:
-        data = json.loads(state_script.string)
-    except Exception as exc:
-        logging.error("Error parsing state JSON: %s", exc)
-        return []
-
+    data = json.loads(m.group(1))
+    items = data.get("ItemModule", {})
     videos = []
-    for item in data.get("ItemModule", {}).values():
-        caption = item.get("desc", "")
-        stats = item.get("stats", {})
-        video = Video(
-            caption=caption,
-            views=int(stats.get("playCount", 0)),
-            likes=int(stats.get("diggCount", 0)),
-            comments=int(stats.get("commentCount", 0)),
-            shares=int(stats.get("shareCount", 0)),
-            date=time.strftime("%Y-%m-%d", time.localtime(item.get("createTime", 0))),
-            url=f"https://www.tiktok.com/@impulseprod/video/{item.get('id')}",
-        )
-        videos.append(video)
+    for vid_id, info in items.items():
+        stats = info.get("stats", {})
+        caption = info.get("desc", "")
+        videos.append({
+            "caption": caption,
+            "views":    stats.get("playCount", 0),
+            "likes":    stats.get("diggCount", 0),
+            "comments": stats.get("commentCount", 0),
+            "shares":   stats.get("shareCount", 0),
+            "url":      f"https://www.tiktok.com/@{TIKTOK_USER}/video/{vid_id}",
+            "date":     time.strftime(
+                            "%Y-%m-%d %H:%M:%S",
+                            time.localtime(info.get("createTime", 0))
+                        )
+        })
     return videos
 
-
-def authorize_sheet():
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    credentials = ServiceAccountCredentials.from_json_keyfile_name(
-        "credentials.json", scope
-    )
-    gc = gspread.authorize(credentials)
-    sh = gc.open_by_key(SHEET_ID)
-    return sh.worksheet(SHEET_NAME)
-
-
-def read_existing_urls(sheet) -> List[str]:
-    try:
-        urls = sheet.col_values(7)
-    except Exception as exc:
-        logging.error("Failed to read existing URLs: %s", exc)
-        urls = []
-    return urls
-
-
-def append_videos(sheet, videos: List[Video]):
-    existing = set(read_existing_urls(sheet))
-    new_rows = []
-    new_videos = []
-    for v in videos:
-        if v.url in existing:
-            continue
-        row = [
-            v.caption,
-            v.views,
-            v.likes,
-            v.comments,
-            v.shares,
-            v.date,
-            v.url,
-            v.score,
-            v.emojis,
-            v.words,
-            v.sports_keywords,
-        ]
-        new_rows.append(row)
-        new_videos.append(v)
-
-    if new_rows:
-        sheet.append_rows(new_rows)
-    return new_videos
-
+def analyze_caption(text):
+    """Count emojis, words, ALL-CAPS, and sports keywords."""
+    emojis     = len(re.findall(r"[^\w\s,]", text))
+    words      = len(text.split())
+    all_caps   = len(re.findall(r"\b[A-Z]{2,}\b", text))
+    keywords   = ["Curry","Mahomes","LeBron","buzzer","touchdown","finals","playoffs"]
+    sports_kw  = sum(text.lower().count(k.lower()) for k in keywords)
+    return emojis, words, all_caps, sports_kw
 
 def main():
-    logging.info("Fetching TikTok page…")
-    try:
-        html = get_html(TIKTOK_URL)
-    except Exception as exc:
-        logging.error("Failed to download TikTok page: %s", exc)
+    load_credentials()
+    sheet = init_sheet()
+    existing = get_existing_urls(sheet)
+
+    url = f"https://www.tiktok.com/@{TIKTOK_USER}"
+    html = fetch_page(url)
+    if not html:
+        logging.error("No HTML fetched; exiting.")
         return
 
     videos = parse_videos(html)
-    if not videos:
-        logging.error("No videos parsed. Exiting.")
-        return
+    new_count = 0
 
-    sheet = authorize_sheet()
-    added_videos = append_videos(sheet, videos)
+    for vid in videos:
+        if vid["url"] in existing:
+            continue
 
-    added_videos.sort(key=lambda v: v.score, reverse=True)
-    logging.info("Added %d new videos", len(added_videos))
-    for v in added_videos[:5]:
-        logging.info("%s | score=%d", v.url, v.score)
+        score = (
+            vid["views"]
+            + 2 * vid["likes"]
+            + 3 * vid["comments"]
+            + 5 * vid["shares"]
+        )
+        emojis, words, all_caps, sports_kw = analyze_caption(vid["caption"])
 
+        row = [
+            vid["caption"],
+            vid["views"],
+            vid["likes"],
+            vid["comments"],
+            vid["shares"],
+            vid["date"],
+            vid["url"],
+            score,
+            emojis,
+            words,
+            sports_kw,
+        ]
+        sheet.append_row(row, value_input_option="USER_ENTERED")
+        new_count += 1
+        logging.info(f"Appended new video: {vid['url']}")
+
+    logging.info(f"Done — {new_count} new videos added.")
 
 if __name__ == "__main__":
     main()

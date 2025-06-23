@@ -1,11 +1,8 @@
 import os
 import time
 import logging
-import requests
-import re
 import json
-from fake_useragent import UserAgent
-from bs4 import BeautifulSoup
+from TikTokApi import TikTokApi
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -46,37 +43,15 @@ def get_existing_urls(sheet):
     except Exception:
         return set()
 
-def fetch_page(url, retries=3, delay=5):
-    """GET with rotating UA and retry logic."""
-    ua = UserAgent()
-    headers = {
-        "User-Agent": ua.random,
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml"
-    }
-    for i in range(retries):
-        try:
-            r = requests.get(url, headers=headers, timeout=10)
-            r.raise_for_status()
-            return r.text
-        except Exception as e:
-            logging.warning(f"Fetch failed (attempt {i+1}/{retries}): {e}")
-            time.sleep(delay * (i+1))
-    logging.error("All fetch attempts failed.")
-    return None
-
-def parse_videos(html):
-    """Extract video info from SIGI_STATE JSON."""
-    m = re.search(r'window\["SIGI_STATE"\]\s*=\s*({.*?});', html, re.DOTALL)
-    if not m:
-        logging.error("Failed to locate SIGI_STATE JSON in page.")
-        return []
-    data = json.loads(m.group(1))
-    items = data.get("ItemModule", {})
+def parse_videos():
+    """Use TikTokApi to fetch the latest videos for TIKTOK_USER."""
+    api = TikTokApi()
+    items = api.by_username(TIKTOK_USER, count=50)
     videos = []
-    for vid_id, info in items.items():
-        stats = info.get("stats", {})
-        caption = info.get("desc", "")
+    for item in items:
+        stats   = item.get("stats", {})
+        vid_id  = item.get("id")
+        caption = item.get("desc", "")
         videos.append({
             "caption": caption,
             "views":    stats.get("playCount", 0),
@@ -86,16 +61,16 @@ def parse_videos(html):
             "url":      f"https://www.tiktok.com/@{TIKTOK_USER}/video/{vid_id}",
             "date":     time.strftime(
                             "%Y-%m-%d %H:%M:%S",
-                            time.localtime(info.get("createTime", 0))
+                            time.localtime(item.get("createTime", 0))
                         )
         })
     return videos
 
 def analyze_caption(text):
     """Count emojis, words, ALL-CAPS, and sports keywords."""
-    emojis     = len(re.findall(r"[^\w\s,]", text))
+    emojis     = len([c for c in text if c in "😀😂❤️👍🏀🏈🏆"])  # simple emoji set
     words      = len(text.split())
-    all_caps   = len(re.findall(r"\b[A-Z]{2,}\b", text))
+    all_caps   = len([w for w in text.split() if w.isupper() and len(w) > 1])
     keywords   = ["Curry","Mahomes","LeBron","buzzer","touchdown","finals","playoffs"]
     sports_kw  = sum(text.lower().count(k.lower()) for k in keywords)
     return emojis, words, all_caps, sports_kw
@@ -105,13 +80,7 @@ def main():
     sheet = init_sheet()
     existing = get_existing_urls(sheet)
 
-    url = f"https://www.tiktok.com/@{TIKTOK_USER}"
-    html = fetch_page(url)
-    if not html:
-        logging.error("No HTML fetched; exiting.")
-        return
-
-    videos = parse_videos(html)
+    videos = parse_videos()
     new_count = 0
 
     for vid in videos:

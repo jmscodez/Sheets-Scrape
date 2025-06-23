@@ -31,4 +31,4 @@ jobs:
           printf '%s' "$GOOGLE_SHEETS_CREDENTIALS" > credentials.json
 
       - name: Run scraper
-        run: python main.py
+        run: python impulse-analyzer/main.py

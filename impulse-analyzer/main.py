@@ -12,7 +12,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 TIKTOK_USER     = "impulseprod"
-SHEET_ID        = "10UqBGA93ns5b"
+SHEET_ID = "10UqBGA93ns5b-56gldRCwcSbGHtjqWCj45dhJS8lLAA"
 SHEET_NAME      = "Impulse Video Tracker"
 SERVICE_ACCOUNT = "credentials.json"
 # ────────────────────────────────────────────────────────────────────────────────

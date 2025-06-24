@@ -32,8 +32,7 @@ def init_sheet():
     ]
     creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT, scope)
     client = gspread.authorize(creds)
-    sheet = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
-    return sheet
+    return client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
 
 def get_existing_urls(sheet):
     """Read the URL column (7th) to dedupe."""
@@ -45,7 +44,7 @@ def get_existing_urls(sheet):
 
 def parse_videos():
     """Fetch the latest videos for TIKTOK_USER via TikTokApi."""
-    api = TikTokApi.get_instance()
+    api = TikTokApi()  # <-- changed here
     try:
         user = api.user(username=TIKTOK_USER)
         videos_list = list(user.videos(count=50))

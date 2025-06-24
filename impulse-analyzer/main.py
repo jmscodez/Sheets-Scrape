@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import json
+import asyncio
 from TikTokApi import TikTokApi
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -43,11 +44,17 @@ def get_existing_urls(sheet):
         return set()
 
 def parse_videos():
-    """Fetch the latest videos for TIKTOK_USER via TikTokApi."""
-    api = TikTokApi()  # <-- changed here
-    try:
+    """Fetch the latest videos for TIKTOK_USER via TikTokApi (async)."""
+    async def _fetch():
+        api = TikTokApi()
         user = api.user(username=TIKTOK_USER)
-        videos_list = list(user.videos(count=50))
+        vids = []
+        async for video in user.videos(count=50):
+            vids.append(video)
+        return vids
+
+    try:
+        videos_list = asyncio.run(_fetch())
     except Exception as e:
         logging.error(f"TikTokApi error: {e}")
         return []
@@ -84,7 +91,7 @@ def main():
     sheet    = init_sheet()
     existing = get_existing_urls(sheet)
 
-    videos   = parse_videos()
+    videos = parse_videos()
     if not videos:
         logging.error("No videos fetched—exiting.")
         return

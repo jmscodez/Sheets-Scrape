@@ -13,10 +13,14 @@ TIKTOK_USER     = "impulseprod"
 SHEET_ID        = "10UqBGA93ns5b-56gldRCwcSbGHtjqWCj45dhJS8lLAA"
 SHEET_NAME      = "Impulse Video Tracker"
 SERVICE_ACCOUNT = "credentials.json"
+# Optional: comma-separated list of HTTP proxies
+TIKTOK_PROXIES  = os.getenv("TIKTOK_PROXIES", None)
 # ────────────────────────────────────────────────────────────────────────────────
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
 
 def load_credentials():
     """Write the raw JSON secret into credentials.json."""
@@ -49,10 +53,13 @@ def parse_videos():
     async def _fetch():
         # create and initialize browser session(s)
         async with TikTokApi() as api:
+            proxies = TIKTOK_PROXIES.split(",") if TIKTOK_PROXIES else None
             await api.create_sessions(
                 num_sessions=1,
-                browser="chromium",
-                sleep_after=3
+                browser="webkit",      # mimic Safari/WebKit
+                headless=False,        # run headful for anti-bot
+                sleep_after=5,         # allow time for msToken
+                proxies=proxies        # optional proxy rotation
             )
             user = api.user(username=TIKTOK_USER)
             vids = []

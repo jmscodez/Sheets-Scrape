@@ -2,9 +2,9 @@ import os
 import time
 import logging
 import json
-import asyncio
-
-from TikTokApi import TikTokApi
+from fake_useragent import UserAgent
+from bs4 import BeautifulSoup
+import requests
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -13,14 +13,10 @@ TIKTOK_USER     = "impulseprod"
 SHEET_ID        = "10UqBGA93ns5b-56gldRCwcSbGHtjqWCj45dhJS8lLAA"
 SHEET_NAME      = "Impulse Video Tracker"
 SERVICE_ACCOUNT = "credentials.json"
-# Optional: comma-separated list of HTTP proxies
-TIKTOK_PROXIES  = os.getenv("TIKTOK_PROXIES", None)
 # ────────────────────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(message)s")
 
 def load_credentials():
     """Write the raw JSON secret into credentials.json."""
@@ -48,47 +44,46 @@ def get_existing_urls(sheet):
     except Exception:
         return set()
 
-def parse_videos():
-    """Fetch the latest videos for TIKTOK_USER via TikTokApi (with sessions)."""
-    async def _fetch():
-        # create and initialize browser session(s)
-        async with TikTokApi() as api:
-            proxies = TIKTOK_PROXIES.split(",") if TIKTOK_PROXIES else None
-            await api.create_sessions(
-                num_sessions=1,
-                browser="webkit",      # mimic Safari/WebKit
-                headless=False,        # run headful for anti-bot
-                sleep_after=5,         # allow time for msToken
-                proxies=proxies        # optional proxy rotation
-            )
-            user = api.user(username=TIKTOK_USER)
-            vids = []
-            async for video in user.videos(count=50):
-                vids.append(video)
-            return vids
+def fetch_mobile_page():
+    """Fetch the mobile user page (avoids bot detection)."""
+    url = f"https://m.tiktok.com/h5/share/usr/{TIKTOK_USER}"
+    ua = UserAgent()
+    headers = {
+        "User-Agent": ua.random,
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml"
+    }
+    r = requests.get(url, headers=headers, timeout=10)
+    r.raise_for_status()
+    return r.text
 
-    try:
-        videos_list = asyncio.run(_fetch())
-    except Exception as e:
-        logging.error(f"TikTokApi error: {e}")
+def parse_videos():
+    """Parse out video info from the mobile-site JSON blob."""
+    html = fetch_mobile_page()
+    soup = BeautifulSoup(html, "html.parser")
+    tag = soup.find("script", id="SIGI_STATE")
+    if not tag or not tag.string:
+        logging.error("Failed to locate SIGI_STATE script tag on mobile page.")
         return []
 
-    logging.info(f"Fetched {len(videos_list)} videos from TikTokApi")
+    data = json.loads(tag.string)
+    items = data.get("ItemModule", {})
     videos = []
-    for video in videos_list:
-        stats   = video.stats
-        vid_id  = video.id
-        caption = video.desc or ""
-        created = video.create_time or 0
+    for vid_id, info in items.items():
+        stats   = info.get("stats", {})
         videos.append({
-            "caption": caption,
-            "views":    stats.playCount,
-            "likes":    stats.diggCount,
-            "comments": stats.commentCount,
-            "shares":   stats.shareCount,
+            "caption": info.get("desc", ""),
+            "views":    stats.get("playCount", 0),
+            "likes":    stats.get("diggCount", 0),
+            "comments": stats.get("commentCount", 0),
+            "shares":   stats.get("shareCount", 0),
             "url":      f"https://www.tiktok.com/@{TIKTOK_USER}/video/{vid_id}",
-            "date":     time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created))
+            "date":     time.strftime(
+                            "%Y-%m-%d %H:%M:%S",
+                            time.localtime(info.get("createTime", 0))
+                        )
         })
+    logging.info(f"Parsed {len(videos)} videos from mobile page")
     return videos
 
 def analyze_caption(text):

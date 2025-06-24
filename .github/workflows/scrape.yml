@@ -21,10 +21,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt playwright
 
-      - name: Set up Playwright browsers
-        uses: microsoft/playwright-github-action@v1
+      - name: Ensure Playwright browsers & system deps are installed
+        run: |
+          python -m playwright install --with-deps
 
       - name: Configure Google credentials
         env:

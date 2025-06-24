@@ -2,21 +2,25 @@ import os
 import time
 import logging
 import json
-from fake_useragent import UserAgent
+
+from scrapfly import Scrapfly, ScrapeConfig
 from bs4 import BeautifulSoup
-import requests
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
-TIKTOK_USER     = "impulseprod"
-SHEET_ID        = "10UqBGA93ns5b-56gldRCwcSbGHtjqWCj45dhJS8lLAA"
-SHEET_NAME      = "Impulse Video Tracker"
-SERVICE_ACCOUNT = "credentials.json"
+TIKTOK_USER       = "impulseprod"
+SHEET_ID          = "10UqBGA93ns5b-56gldRCwcSbGHtjqWCj45dhJS8lLAA"
+SHEET_NAME        = "Impulse Video Tracker"
+SERVICE_ACCOUNT   = "credentials.json"
+# Your Scrapfly API key (set as a GitHub secret SCRAPFLY_API_KEY)
+SCRAPFLY_API_KEY  = os.getenv("SCRAPFLY_API_KEY")
 # ────────────────────────────────────────────────────────────────────────────────
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
 
 def load_credentials():
     """Write the raw JSON secret into credentials.json."""
@@ -45,32 +49,39 @@ def get_existing_urls(sheet):
         return set()
 
 def fetch_mobile_page():
-    """Fetch the mobile user page (avoids bot detection)."""
-    url = f"https://m.tiktok.com/h5/share/usr/{TIKTOK_USER}"
-    ua = UserAgent()
-    headers = {
-        "User-Agent": ua.random,
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml"
-    }
-    r = requests.get(url, headers=headers, timeout=10)
-    r.raise_for_status()
-    return r.text
+    """Use Scrapfly to fetch the TikTok page (handles JS and anti-bot)."""
+    if not SCRAPFLY_API_KEY:
+        raise RuntimeError("Missing SCRAPFLY_API_KEY")
+    scrapfly = Scrapfly(key=SCRAPFLY_API_KEY)
+    result = scrapfly.scrape(
+        ScrapeConfig(
+            url=f"https://www.tiktok.com/@{TIKTOK_USER}",
+            render_js=True,
+            timeout=30000  # ms
+        )
+    )
+    if result.status_code != 200:
+        logging.error(f"Scrapfly fetch failed: {result.status_code}")
+        return None
+    return result.content
 
 def parse_videos():
-    """Parse out video info from the mobile-site JSON blob."""
+    """Parse out video info from the SIGI_STATE JSON on the page."""
     html = fetch_mobile_page()
+    if not html:
+        return []
+
     soup = BeautifulSoup(html, "html.parser")
     tag = soup.find("script", id="SIGI_STATE")
     if not tag or not tag.string:
-        logging.error("Failed to locate SIGI_STATE script tag on mobile page.")
+        logging.error("Failed to locate SIGI_STATE script tag.")
         return []
 
     data = json.loads(tag.string)
     items = data.get("ItemModule", {})
     videos = []
     for vid_id, info in items.items():
-        stats   = info.get("stats", {})
+        stats = info.get("stats", {})
         videos.append({
             "caption": info.get("desc", ""),
             "views":    stats.get("playCount", 0),
@@ -83,7 +94,7 @@ def parse_videos():
                             time.localtime(info.get("createTime", 0))
                         )
         })
-    logging.info(f"Parsed {len(videos)} videos from mobile page")
+    logging.info(f"Parsed {len(videos)} videos from page")
     return videos
 
 def analyze_caption(text):

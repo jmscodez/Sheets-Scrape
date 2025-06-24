@@ -3,6 +3,7 @@ import time
 import logging
 import json
 import asyncio
+
 from TikTokApi import TikTokApi
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -44,14 +45,20 @@ def get_existing_urls(sheet):
         return set()
 
 def parse_videos():
-    """Fetch the latest videos for TIKTOK_USER via TikTokApi (async)."""
+    """Fetch the latest videos for TIKTOK_USER via TikTokApi (with sessions)."""
     async def _fetch():
-        api = TikTokApi()
-        user = api.user(username=TIKTOK_USER)
-        vids = []
-        async for video in user.videos(count=50):
-            vids.append(video)
-        return vids
+        # create and initialize browser session(s)
+        async with TikTokApi() as api:
+            await api.create_sessions(
+                num_sessions=1,
+                browser="chromium",
+                sleep_after=3
+            )
+            user = api.user(username=TIKTOK_USER)
+            vids = []
+            async for video in user.videos(count=50):
+                vids.append(video)
+            return vids
 
     try:
         videos_list = asyncio.run(_fetch())
